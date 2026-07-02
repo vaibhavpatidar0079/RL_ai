@@ -3,11 +3,3 @@ stable-baselines3[extra]
 gymnasium
 numpy
 tensorboard
-
-
-git init
-git add .
-git commit -m "first commit"
-git branch -M main
-git remote add origin https://github.com/vaibhavpatidar0079/RL_ai.git
-git push -u origin main
