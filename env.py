@@ -5,7 +5,7 @@ import random
 
 # Import the existing game from your file
 # Assuming your game file is named ai_arena.py as in the canvas
-from ai_arena import AIArenaGame
+from ai import AIArenaGame
 
 class AIArenaEnv(gym.Env):
     """
