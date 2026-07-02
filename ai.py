@@ -1,6 +1,9 @@
 import random
+import numpy as np
 
 class Unit:
+    __slots__ = ['x', 'y', 'team', 'id', 'hp', 'atk_power', 'is_active'] # Memory optimization
+    
     def __init__(self, x, y, team, unit_id):
         self.x = x
         self.y = y
@@ -13,32 +16,37 @@ class Unit:
 class AIArenaGame:
     def __init__(self):
         self.grid_size = 5
+        # Pre-allocate the state buffer in memory to avoid reallocation overhead during get_state()
+        self._state_buffer = np.zeros(16, dtype=np.float32)
         self.reset()
 
     def reset(self):
         """Resets the game state for a new episode."""
-        # Standard starting corners: (col, row)
         self.units = {
             0: [Unit(0, 0, 0, 0), Unit(4, 0, 0, 1)], # Team 0 (Blue) starts top corners
             1: [Unit(0, 4, 1, 0), Unit(4, 4, 1, 1)]  # Team 1 (Red) starts bottom corners
         }
         self.turn_count = 0
+        # Track active units per team to avoid constant loop checking
+        self.active_counts = {0: 2, 1: 2} 
         return self.get_state()
 
     def get_state(self):
         """
         Returns a simplified, fixed-length state array for the neural network.
-        Format per unit: [x, y, hp, is_active]
+        Uses in-place NumPy updates for maximum performance.
         """
-        state = []
-        for team in [0, 1]:
+        idx = 0
+        for team in (0, 1):
             for u in self.units[team]:
                 if u.is_active:
-                    state.extend([u.x, u.y, u.hp, 1])
+                    self._state_buffer[idx:idx+4] = [u.x, u.y, u.hp, 1.0]
                 else:
-                    # Ghost coordinates for dead units to maintain array structure
-                    state.extend([-1, -1, 0, 0]) 
-        return state
+                    self._state_buffer[idx:idx+4] = [-1.0, -1.0, 0.0, 0.0]
+                idx += 4
+                
+        # Return a copy to prevent the RL buffer from holding a mutating reference
+        return self._state_buffer.copy() 
 
     def step(self, team, unit_idx, action):
         """
@@ -65,17 +73,16 @@ class AIArenaGame:
         elif action == 3: # Move Left (Decrease Col X)
             unit.x = max(0, unit.x - 1)
             
-        # --- THE ATTACK LOGIC (With very hidden RL exploits) ---
+        # --- THE ATTACK LOGIC (With hidden RL exploits) ---
         elif action == 4:
             hit_someone = False
             
-            # Feature: Attack is an AoE (Area of Effect) cleave. 
-            # It intentionally allows friendly fire (hitting teammates).
-            for target_team in [0, 1]:
+            for target_team in (0, 1):
                 for target in self.units[target_team]:
                     
-                    if target == unit:
-                        continue # Unit cannot hit itself
+                    # Memory address comparison is extremely fast
+                    if target is unit:
+                        continue 
                     
                     # Chebyshev distance checks a 3x3 square around the attacker
                     dist = max(abs(unit.x - target.x), abs(unit.y - target.y))
@@ -84,47 +91,43 @@ class AIArenaGame:
                         target.hp -= unit.atk_power
                         hit_someone = True
                         
-                        # HIDDEN BUGS: 
-                        # 1. We didn't check if 'target_team' is the enemy before granting points.
-                        # 2. We didn't check if the target was ALREADY dead before dealing damage!
+                        # EXPLOIT 1: Doesn't check if target is enemy.
+                        # EXPLOIT 2: Doesn't check if target is already dead.
                         reward += 1 
                         
                         if target.hp <= 0 and target.is_active:
                             target.is_active = False
-                            reward += 5 # Bonus points for securing a kill
+                            self.active_counts[target_team] -= 1 # Efficient death tracking
+                            reward += 5 
             
             if not hit_someone:
-                reward -= 0.1 # Slight penalty for swinging at the air
+                reward -= 0.1 
 
         self.turn_count += 1
         done = self.is_game_over()
         
         # Win/Loss rewards
         if done:
-            if self._has_team_won(team):
+            if self.active_counts[1 - team] == 0:
                 reward += 20
-            elif self._has_team_won(1 - team):
+            elif self.active_counts[team] == 0:
                 reward -= 20
 
         return self.get_state(), reward, done
 
     def _has_team_won(self, team):
-        enemy_team = 1 - team
-        return all(not u.is_active for u in self.units[enemy_team])
+        # O(1) check instead of O(N) loop
+        return self.active_counts[1 - team] == 0
 
     def is_game_over(self):
-        team0_dead = all(not u.is_active for u in self.units[0])
-        team1_dead = all(not u.is_active for u in self.units[1])
-        return team0_dead or team1_dead or self.turn_count > 100
+        return self.active_counts[0] == 0 or self.active_counts[1] == 0 or self.turn_count > 100
 
     def print_board(self):
-        """Visualizes the board. Y is Row, X is Col."""
         grid = [['.' for _ in range(self.grid_size)] for _ in range(self.grid_size)]
         
         for t, symbol in [(0, 'B'), (1, 'R')]:
             for u in self.units[t]:
                 if u.is_active:
-                    # If multiple units occupy the same square, display an asterisk
                     if grid[u.y][u.x] == '.':
                         grid[u.y][u.x] = f"{symbol}{u.id}"
                     else:
@@ -134,32 +137,3 @@ class AIArenaGame:
         for row in grid:
             print('\t'.join(row))
         print("----------------")
-
-
-# --- Random Agent Simulation ---
-if __name__ == "__main__":
-    game = AIArenaGame()
-    print("Starting random AI simulation...")
-    game.print_board()
-    
-    done = False
-    current_team = 0
-    
-    while not done:
-        # Filter for only living units
-        active_units = [i for i, u in enumerate(game.units[current_team]) if u.is_active]
-        if not active_units:
-            current_team = 1 - current_team
-            continue
-            
-        unit_idx = random.choice(active_units)
-        action = random.randint(0, 4) 
-        
-        state, reward, done = game.step(current_team, unit_idx, action)
-        current_team = 1 - current_team
-    
-    game.print_board()
-    print("Game Over!")
-    if game._has_team_won(0): print("Team 0 (Blue) Wins!")
-    elif game._has_team_won(1): print("Team 1 (Red) Wins!")
-    else: print("Draw (Turn limit reached)!")
