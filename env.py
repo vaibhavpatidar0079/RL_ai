@@ -4,7 +4,7 @@ import numpy as np
 import random
 
 # Import the optimized game
-from ai_arena import AIArenaGame
+from ai import AIArenaGame
 
 class AIArenaEnv(gym.Env):
     """
